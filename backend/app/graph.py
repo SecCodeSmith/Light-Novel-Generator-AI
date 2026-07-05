@@ -250,6 +250,61 @@ def save_lore_node(story_id: str, topic: str, description: str) -> None:
         SET l.description = $desc
         """, id=story_id, topic=topic, desc=description)
 
+
+# Node types eligible for the unconnected-node reconciliation pass, and the
+# property that uniquely identifies one within a story (used both to find it
+# and to re-match it when wiring up a connection).
+_RECONCILE_KEY_PROP = {"Lore": "topic", "Thread": "id", "Character": "name", "Location": "name"}
+_RECONCILE_TARGET_PROP = {**_RECONCILE_KEY_PROP, "Chapter": "number"}
+
+
+def find_unconnected_nodes(story_id: str) -> list[dict]:
+    """Lore, Thread, Character and Location nodes with zero graph edges.
+
+    Lore is never linked to anything at creation time (`save_lore_node` only sets
+    properties), and outline-phase Threads aren't linked to characters either (only
+    threads opened during chapter extraction get an INVOLVED_IN edge) — so both kinds
+    routinely end up floating. Characters/Locations can also end up isolated if the
+    architect mentions them without ever using them in an event or scene.
+    """
+    rows = run("""
+        MATCH (n {story_id: $id})
+        WHERE (n:Lore OR n:Thread OR n:Character OR n:Location) AND NOT (n)--()
+        RETURN
+          CASE WHEN n:Lore THEN 'Lore' WHEN n:Thread THEN 'Thread'
+               WHEN n:Character THEN 'Character' ELSE 'Location' END AS node_type,
+          coalesce(n.topic, n.id, n.name) AS key,
+          coalesce(n.description, '') AS description
+        """, id=story_id)
+    return [dict(row) for row in rows]
+
+
+def connect_unconnected_node(story_id: str, node_type: str, key: str,
+                             target_type: str, target_key: str,
+                             rel_type: str = "RELATES_TO") -> dict:
+    """Link a previously unconnected node to an existing entity in the graph."""
+    key_prop = _RECONCILE_KEY_PROP.get(node_type)
+    target_prop = _RECONCILE_TARGET_PROP.get(target_type)
+    if not key_prop or not target_prop or not key or not target_key:
+        return {"success": False, "error": f"Unsupported connection {node_type} -> {target_type}"}
+    safe_type = "".join(ch for ch in rel_type.upper().replace(" ", "_") if ch.isalnum() or ch == "_")
+    safe_type = safe_type or "RELATES_TO"
+    if target_type == "Chapter":
+        try:
+            target_key = int(target_key)
+        except (TypeError, ValueError):
+            return {"success": False, "error": "Chapter target must be a chapter number"}
+    rows = run(f"""
+        MATCH (a:{node_type} {{story_id: $id, {key_prop}: $key}})
+        MATCH (b:{target_type} {{story_id: $id, {target_prop}: $target_key}})
+        MERGE (a)-[:`{safe_type}`]->(b)
+        RETURN a, b
+        """, id=story_id, key=key, target_key=target_key)
+    if not rows:
+        return {"success": False, "error": f"{node_type} '{key}' or {target_type} '{target_key}' not found"}
+    return {"success": True}
+
+
 def update_knowledge_graph(story_id: str, action: str, entity_data: dict) -> dict:
     """Helper for the agent to explicitly add entities to the graph."""
     try:

@@ -405,12 +405,13 @@ class TestToolDefsForRole:
             tools = _tool_defs_for_role("writer")
             assert len(tools) == 5
 
-    def test_critic_gets_no_tools(self):
-        """Critic role should get no tools."""
+    def test_critic_gets_only_graph_query_tool(self):
+        """Critic role should get read-only graph lookup only, no research/edit tools."""
         with patch("app.agent.cache"), patch("app.agent.config"):
             from app.agent import _tool_defs_for_role
             tools = _tool_defs_for_role("critic")
-            assert tools == []
+            names = {t["function"]["name"] for t in tools}
+            assert names == {"story_graph_query"}
 
     def test_extractor_gets_no_tools(self):
         """Extractor role should get no tools."""

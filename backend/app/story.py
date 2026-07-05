@@ -107,6 +107,17 @@ acting, timeline violations, tone breaks, plot holes. Reply with ONLY JSON:
 {"approved": true/false, "issues": ["specific issue", ...], "summary": "one sentence"}.
 Approve unless there are real consistency problems."""
 
+CRITIC_SYSTEM_AGENT = CRITIC_SYSTEM + """
+
+You have access to one tool:
+- story_graph_query: look up a character, location, or entity in the story's knowledge
+  graph for its current status, relationships and connected events.
+The FACTS block only lists the main cast and recent history — use story_graph_query to
+check anything it doesn't cover (a minor character's last known status, an entity's
+relationships) before deciding. You cannot edit the graph; you only verify it.
+
+After checking anything you need, reply with ONLY the JSON verdict described above."""
+
 EXTRACTOR_SYSTEM = """You extract story facts from a chapter so they can be stored in a
 knowledge graph. Reply with ONLY JSON:
 {"chapter_summary": "3-4 sentences",
@@ -117,6 +128,26 @@ knowledge graph. Reply with ONLY JSON:
  "threads_opened": [{"description": "what the thread is about", "characters": ["Character Name 1"]}],
  "threads_resolved": ["thread id from the OPEN THREADS list"]}
 Use existing character names verbatim. Only include what the chapter states."""
+
+RECONCILE_SYSTEM = """You are the story architect reviewing the knowledge graph right
+after outlining. You are given the story's premise, its chapter summaries, and a list
+of graph nodes (lore entries, plot threads, characters, locations) that currently have
+NO connection to anything else in the graph — usually lore researched along the way,
+or threads/characters that were mentioned but never wired into a chapter.
+For EACH node in unconnected_nodes, decide whether it is actually needed by this story.
+Reply with ONLY JSON:
+{"connections": [{"node_type": "Lore"|"Thread"|"Character"|"Location",
+"key": "<the node's key, copied verbatim from the input>",
+"needed": true or false,
+"connect_to_type": "Character"|"Location"|"Thread"|"Chapter",  // required if needed
+"connect_to_key": "<name, thread key, or chapter number of an EXISTING entity from "
+"the premise or chapter summaries>",  // required if needed
+"relationship": "UPPER_SNAKE type, e.g. RELATES_TO, SET_IN, INVOLVED_IN, ABOUT"  // required if needed
+}, ...]}
+One entry per input node. If a node isn't needed, set needed to false and omit the
+connect_to_* fields — it is left alone, never deleted. Only connect to an entity that
+already exists in the premise/chapter summaries; never invent a new name. No text
+outside the JSON object."""
 
 
 def _chat_json(client, model: str, system: str, user: str, temperature: float,
@@ -169,6 +200,51 @@ def _facts_block(ctx: dict) -> str:
         "open_threads": ctx["open_threads"],
         "previous_chapter_summaries": ctx["previous_chapters"],
     }, ensure_ascii=False, indent=1)
+
+
+def _reconcile_unconnected_nodes(story_id: str, client, model: str,
+                                 chapter_summaries: list[str]) -> None:
+    """Ask the architect to decide, for every graph node with zero edges (lore
+    researched along the way, threads/characters that never made it into a chapter),
+    whether it's needed — and if so, wire it into the graph. Left-alone nodes are
+    never deleted."""
+    unconnected = graph.find_unconnected_nodes(story_id)
+    if not unconnected:
+        return
+    story = graph.get_story(story_id) or {}
+    cache.log(story_id, f"Architect: found {len(unconnected)} unconnected node(s) in the "
+                        "graph (lore/threads/etc.) — deciding whether to weave them in…")
+    user = json.dumps({
+        "premise": story.get("premise", ""),
+        "chapter_summaries": chapter_summaries,
+        "unconnected_nodes": unconnected,
+    }, ensure_ascii=False, indent=1)
+    decisions = _chat_json(client, model, RECONCILE_SYSTEM, user, temperature=0.2,
+                           max_tokens=4096, story_id=story_id, role="architect (reconcile)",
+                           mock_hint={"task": "reconcile", "unconnected": unconnected})
+    connected, kept = 0, 0
+    for item in decisions.get("connections", []):
+        if not item.get("needed"):
+            kept += 1
+            continue
+        result = graph.connect_unconnected_node(
+            story_id, item.get("node_type", ""), item.get("key", ""),
+            item.get("connect_to_type", ""), item.get("connect_to_key", ""),
+            item.get("relationship", "RELATES_TO"),
+        )
+        if result.get("success"):
+            connected += 1
+            cache.log(story_id, f"Architect: connected {item.get('node_type')} "
+                                f"'{item.get('key')}' → {item.get('connect_to_type')} "
+                                f"'{item.get('connect_to_key')}' "
+                                f"({item.get('relationship', 'RELATES_TO')}).")
+        else:
+            cache.log(story_id, f"Architect: could not connect {item.get('node_type')} "
+                                f"'{item.get('key')}' — {result.get('error', 'unknown error')}.")
+    if kept:
+        cache.log(story_id, f"Architect: left {kept} node(s) unconnected — not needed for this story.")
+    if connected:
+        cache.log(story_id, f"Architect: wired {connected} previously-unconnected node(s) into the graph.")
 
 
 def generate_outline(story_id: str) -> None:
@@ -312,6 +388,9 @@ def generate_outline(story_id: str) -> None:
             graph.save_outline_chapters(story_id, chapters)
             planned_summaries += [f"ch{c.get('number')}: {c.get('title', '')} — {c.get('summary', '')}"
                                   for c in chapters]
+
+        _reconcile_unconnected_nodes(story_id, client, model, planned_summaries)
+
         cache.bump_graph_version(story_id)
         cache.set_status(story_id, "outlined")
         cache.log(story_id, f"Outline complete: {total} chapters planned, graph populated.")
@@ -405,10 +484,17 @@ def write_one_chapter(story_id: str, number: int, client, cfg: dict) -> None:
         cache.record_llm(story_id, f"writer ch{number}", user, draft)
 
     cache.log(story_id, f"Critic: reviewing chapter {number}…")
-    review = _chat_json(client, critic_model, CRITIC_SYSTEM,
-                        f"FACTS:\n{facts}\n\nCHAPTER {number} DRAFT:\n{draft}",
-                        temperature=0.2, story_id=story_id, role=f"critic ch{number}",
-                        mock_hint={"task": "critic"})
+    critic_user = f"FACTS:\n{facts}\n\nCHAPTER {number} DRAFT:\n{draft}"
+    if use_agent:
+        review = agent_chat_json(
+            client, critic_model, CRITIC_SYSTEM_AGENT, critic_user, 0.2,
+            max_tokens=4096, tools=_tool_defs_for_role("critic"), story_id=story_id,
+            role=f"critic ch{number}", mock_hint={"task": "critic"},
+        )
+    else:
+        review = _chat_json(client, critic_model, CRITIC_SYSTEM, critic_user,
+                            temperature=0.2, story_id=story_id, role=f"critic ch{number}",
+                            mock_hint={"task": "critic"})
     issues = review.get("issues") or []
     if not review.get("approved", True) and issues:
         cache.log(story_id, f"Critic found {len(issues)} issue(s); revising: "

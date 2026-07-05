@@ -23,11 +23,15 @@ logger = logging.getLogger(__name__)
 def _tool_defs_for_role(role: str) -> list[dict]:
     """Return the tool definitions appropriate for a pipeline role.
 
-    - architect / writer: all tools (web_search, wikipedia_lookup, story_graph_query)
-    - critic / extractor: no tools (they work from the text they're given)
+    - architect / writer: all tools (web_search, wikipedia_lookup, story_graph_query, …)
+    - critic: read-only graph lookup only (story_graph_query) — it verifies facts against
+      the graph, it never researches the web or edits the graph
+    - extractor: no tools (works from the chapter text it's given)
     """
     if role in ("architect", "writer"):
         return list(TOOL_DEFINITIONS)
+    if role == "critic":
+        return [t for t in TOOL_DEFINITIONS if t["function"]["name"] == "story_graph_query"]
     return []
 
 

@@ -267,6 +267,8 @@ class MockClient:
                                   "summary": "Draft is consistent with the recorded facts."})
         elif task == "extract":
             content = json.dumps(self._extraction(hint))
+        elif task == "reconcile":
+            content = json.dumps(self._reconcile(hint))
         else:
             content = "Mock reply."
         return ChatResult(content=content, tool_calls=[], finish_reason="stop")
@@ -349,6 +351,22 @@ class MockClient:
             "threads_opened": [],
             "threads_resolved": [],
         }
+
+    def _reconcile(self, hint: dict) -> dict:
+        connections = []
+        for node in hint.get("unconnected", []):
+            node_type, key = node.get("node_type"), node.get("key")
+            if node_type == "Thread":
+                connections.append({"node_type": "Thread", "key": key, "needed": True,
+                                    "connect_to_type": "Character", "connect_to_key": "Aria Vale",
+                                    "relationship": "INVOLVED_IN"})
+            elif node_type == "Lore":
+                connections.append({"node_type": "Lore", "key": key, "needed": True,
+                                    "connect_to_type": "Location", "connect_to_key": self.PLACES[0]["name"],
+                                    "relationship": "RELATES_TO"})
+            else:
+                connections.append({"node_type": node_type, "key": key, "needed": False})
+        return {"connections": connections}
 
 
 def make_client(cfg: dict):
