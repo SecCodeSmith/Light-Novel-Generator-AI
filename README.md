@@ -23,20 +23,13 @@ component).
 6. Consistency tools: graph visualization, Cypher checks (dead characters acting
    after death, stale open threads, isolated characters…), entity connection lookup.
 
-## Run it (Docker on WSL)
+## Run it docker Compose
 
 ```bash
-cd /mnt/c/Users/Kuba/Desktop/Light_novels_Generator_AI   # or wherever you cloned it
 docker compose up -d --build
 ```
 
 Then open **http://localhost:8000**
-
-> **WSL note:** Windows shuts the idle WSL VM down a short while after the last WSL
-> command exits, which stops Docker and the containers. They are marked
-> `restart: unless-stopped`, so any command that boots WSL (even `wsl echo hi`)
-> brings the whole stack back automatically. A quick smoke test:
-> `python3 scripts/smoke_test.py` (uses the offline mock LLM).
 
 - Neo4j browser: http://localhost:7474 (user `neo4j`, password `lightnovel123`)
 - Redis: localhost:6379
