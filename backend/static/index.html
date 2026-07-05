@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Light Novel Generator AI</title>
+  <meta name="description"
+    content="AI-powered light novel generator with research tools, knowledge graph consistency, and agent mode for authentic storytelling.">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+  <header>
+    <div class="brand">📖 Light Novel Generator <span>AI</span></div>
+    <select id="storySelect" title="Open an existing story">
+      <option value="">— open a story —</option>
+    </select>
+    <span id="statusBadge" class="badge">idle</span>
+    <span id="agentBadge" class="badge agent-badge" title="Agent mode status">🤖 agent off</span>
+    <span id="healthBadge" class="badge" title="neo4j / redis health">…</span>
+  </header>
+
+  <nav>
+    <button class="tab active" data-tab="setup">⚙ Setup</button>
+    <button class="tab" data-tab="story">✦ Story</button>
+    <button class="tab" data-tab="write">✍ Write</button>
+    <button class="tab" data-tab="graph">🕸 Graph</button>
+  </nav>
+
+  <main>
+    <!-- ============================== SETUP ============================== -->
+    <section id="tab-setup" class="panel active">
+      <h2>LLM connection (any OpenAI-compatible API)</h2>
+      <div class="grid">
+        <label>Provider preset
+          <select id="preset">
+            <option value="https://api.openai.com/v1">OpenAI</option>
+            <option value="https://openrouter.ai/api/v1">OpenRouter</option>
+            <option value="https://api.groq.com/openai/v1">Groq</option>
+            <option value="http://host.docker.internal:11434/v1">Ollama (local)</option>
+            <option value="http://host.docker.internal:1234/v1">LM Studio (local)</option>
+            <option value="mock">Mock — offline demo, no API key</option>
+          </select>
+        </label>
+        <label>Base URL <input id="baseUrl" placeholder="https://api.openai.com/v1"></label>
+        <label>API key <input id="apiKey" type="password" placeholder="sk-…"></label>
+        <label>Temperature <input id="temperature" type="number" min="0" max="2" step="0.1" value="0.8"></label>
+        <label>Chapter Target Words <input id="chapterTargetWords" type="number" min="500" max="10000" step="100"
+            value="1800"></label>
+      </div>
+      <div class="row">
+        <button id="loadModels" class="primary">Load model list</button>
+        <span id="modelsMsg" class="muted"></span>
+      </div>
+      <div class="grid">
+        <label>✍ Writer model <select id="writerModel"></select></label>
+        <label>🧐 Critic model <select id="criticModel"></select></label>
+      </div>
+
+      <h2>Agent Mode</h2>
+      <div class="agent-toggle-row">
+        <label class="toggle-label">
+          <input type="checkbox" id="agentMode" checked>
+          <span class="toggle-switch"></span>
+          <span class="toggle-text">Enable agent mode</span>
+        </label>
+        <span class="muted agent-hint">
+          When enabled, the architect and writer LLMs can call research tools
+          (web search, Wikipedia, story graph queries) during generation to
+          enrich the story with real-world details.
+        </span>
+      </div>
+
+      <div class="row"><button id="saveConfig" class="primary">Save configuration</button>
+        <span id="configMsg" class="muted"></span>
+      </div>
+    </section>
+
+    <!-- ============================== STORY ============================== -->
+    <section id="tab-story" class="panel">
+      <h2>New story</h2>
+      <div class="grid">
+        <label>Title <input id="stTitle" placeholder="The Sunken Archive"></label>
+        <label>Chapters <input id="stChapters" type="number" min="1" max="60" value="10"></label>
+        <label>Language <input id="stLanguage" value="English"></label>
+      </div>
+      <label>Story description — premise, world, characters, anything you want
+        <textarea id="stDescription" rows="7"
+          placeholder="A young archivist discovers that the flooded library under her city erases memories…"></textarea>
+      </label>
+      <div class="row">
+        <button id="createStory" class="primary">Create story → generate outline & graph</button>
+        <button id="regenOutline">↻ Regenerate outline</button>
+        <button id="deleteStory" class="danger">Delete current story</button>
+      </div>
+      <h2>Outline</h2>
+      <div id="outlineBox" class="muted">No story loaded.</div>
+    </section>
+
+    <!-- ============================== WRITE ============================== -->
+    <section id="tab-write" class="panel">
+      <div class="row">
+        <button id="writeNext" class="primary">▶ Write next chapter</button>
+        <button id="writeAll" class="primary">⏩ Write ALL remaining</button>
+        <button id="exportBtn">⬇ Export .md</button>
+        <button id="exportZip">🗜 Chapters .zip</button>
+        <button id="exportPdf">📄 Full story PDF</button>
+        <button id="exportDocx">📝 Full story Word</button>
+        <span id="writeMsg" class="muted"></span>
+      </div>
+      <div class="write-layout">
+        <aside id="chapterList" class="chapter-list"></aside>
+        <div class="editor-col">
+          <div class="row editor-bar">
+            <span id="chapterLabel" class="muted">No chapter selected</span>
+            <button id="saveChapter">💾 Save edits</button>
+          </div>
+          <div id="editor"></div>
+        </div>
+      </div>
+
+      <div id="questionsPanel" class="panel" style="display: none; border-color: #8b5cf6; background-color: #f5f3ff;">
+        <h2 style="color: #6d28d9;">❓ The Architect needs your input</h2>
+        <p>The AI has paused outlining to ask you the following questions. Provide your answers to continue.</p>
+        <div id="questionsList"></div>
+        <div class="row" style="margin-top: 1rem;">
+          <button id="submitAnswers" class="primary" style="background-color: #8b5cf6;">Submit Answers & Resume</button>
+        </div>
+      </div>
+
+      <h2>Progress log</h2>
+      <pre id="logBox" class="log"></pre>
+      <h2>LLM traffic — follow the model</h2>
+      <div class="row">
+        <button id="refreshLLM">↻ Refresh LLM traffic</button>
+        <span class="muted">raw prompts &amp; replies of recent model calls (thinking blocks included)</span>
+      </div>
+      <div id="llmBox"></div>
+    </section>
+
+    <!-- ============================== GRAPH ============================== -->
+    <section id="tab-graph" class="panel">
+      <div class="row">
+        <button id="refreshGraph" class="primary">↻ Refresh graph</button>
+        <button id="runChecks">✔ Run consistency checks</button>
+        <input id="entityName" placeholder="character / location name…">
+        <button id="lookupEntity">🔍 Connections</button>
+      </div>
+      <div id="graphCanvas"></div>
+      <div class="legend">
+        <label class="lg c-Character"><input type="checkbox" class="gfilter" value="Character" checked> Character</label>
+        <label class="lg c-Event"><input type="checkbox" class="gfilter" value="Event" checked> Event</label>
+        <label class="lg c-Scene"><input type="checkbox" class="gfilter" value="Scene" checked> Scene</label>
+        <label class="lg c-Location"><input type="checkbox" class="gfilter" value="Location" checked> Location</label>
+        <label class="lg c-Chapter"><input type="checkbox" class="gfilter" value="Chapter" checked> Chapter</label>
+        <label class="lg c-Thread"><input type="checkbox" class="gfilter" value="Thread" checked> Thread</label>
+        <label class="lg c-Lore"><input type="checkbox" class="gfilter" value="Lore" checked> Lore</label>
+        <label class="lg"><input type="checkbox" id="edgeLabels"> edge labels</label>
+        <span id="graphMeta" class="muted"></span>
+      </div>
+      <div id="checksBox"></div>
+      <div id="entityBox"></div>
+    </section>
+  </main>
+
+  <!-- vis-network is served locally so the graph works without internet/CDN.
+       Monaco is too big to vendor: loaded async from the CDN, app.js falls back
+       to a plain textarea when it does not arrive. -->
+  <script src="/static/vendor/vis-network.min.js"></script>
+  <script async src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+
+</html>

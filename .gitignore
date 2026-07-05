@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+node_modules/
+AI_report/
+
+# Caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
